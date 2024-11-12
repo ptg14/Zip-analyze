@@ -57,81 +57,74 @@ def check_timestamp_difference(fields):
 
 # Analyze ZIP file and detect the operating system that created it
 def analyze_zip_file(file_path, verbose=False):
-    try:
-        with zipfile.ZipFile(file_path, 'r') as zip_file:
-            print("Analyzing ZIP file:", file_path)
-            characteristics = {
-                'NTFS_timestamp': False,
-                'extended_timestamp': False,
-                'unix_uid_gid': False,
-                'unicode_path': False,
-                'mac_folder': False
-            }
-            encoding = 'Unknown'
+    with zipfile.ZipFile(file_path, 'r') as zip_file:
+        print("\nAnalyzing ZIP file:", file_path)
+        characteristics = {
+            'NTFS_timestamp': False,
+            'extended_timestamp': False,
+            'unix_uid_gid': False,
+            'unicode_path': False,
+            'mac_folder': False
+        }
+        encoding = 'Unknown'
 
-            for info in zip_file.infolist():
-                if info.filename.endswith('/'):
-                    if verbose:
-                        print("\nFolder Name:", info.filename)
-                else:
-                    if verbose:
-                        print("\nFile Name:", info.filename)
-                        print("Compressed Size:", info.compress_size)
-                        print("Uncompressed Size:", info.file_size)
-                        print("Last Modified:", datetime.datetime(*info.date_time))
-
-                # Read extra fields from file entry
-                extra_fields = read_extra_field(info.extra)
+        for info in zip_file.infolist():
+            if info.filename.endswith('/'):
                 if verbose:
-                    print("Extra Fields:", extra_fields)
-
-                # Check for timestamp differences
-                check_timestamp_difference(extra_fields)
-
-                # Iterate over extra field header IDs
-                idx = 0
-                while idx < len(info.extra):
-                    header_id, data_size = struct.unpack('<HH', info.extra[idx:idx+4])
-                    if header_id == 0x000A:
-                        characteristics['NTFS_timestamp'] = True
-                    elif header_id == 0x5455:
-                        characteristics['extended_timestamp'] = True
-                    elif header_id == 0x5855:
-                        characteristics['unix_uid_gid'] = True
-                    elif header_id == 0x7075:
-                        characteristics['unicode_path'] = True
-                    idx += 4 + data_size
-
-                # Determine encoding if possible
-                if characteristics['unicode_path']:
-                    encoding = 'UTF-8'
-                elif characteristics['mac_folder']:
-                    encoding = 'UTF-8'
-                elif characteristics['NTFS_timestamp']:
-                    encoding = 'UTF-16'
-                else:
-                    encoding = 'Unknown'
-
-            # Identify probable source based on characteristics
-            if characteristics['mac_folder']:
-                origin = "macOS Compress or similar macOS tool"
-            elif characteristics['NTFS_timestamp']:
-                origin = "Windows-based tool"
-            elif characteristics['extended_timestamp'] and characteristics['unix_uid_gid']:
-                origin = "Unix/Linux tool, possibly on macOS or Ubuntu"
-            elif characteristics['unicode_path']:
-                origin = "Windows with Unicode support (e.g., WinRAR)"
+                    print("\nFolder Name:", info.filename)
             else:
-                origin = "Unknown or unsupported tool"
+                if verbose:
+                    print("\nFile Name:", info.filename)
+                    print("Compressed Size:", info.compress_size)
+                    print("Uncompressed Size:", info.file_size)
+                    print("Last Modified:", datetime.datetime(*info.date_time))
 
-            print("\n-----ZIP File Summary:")
-            print(f"Probable ZIP file origin: {origin}")
+            # Read extra fields from file entry
+            extra_fields = read_extra_field(info.extra)
             if verbose:
-                print(f"Detected Characteristics: {characteristics}")
-            print(f"Encoding used: {encoding}")
-    except zipfile.BadZipFile:
-        print("Error: The file is not a valid ZIP file.")
-    except FileNotFoundError:
-        print("Error: The file was not found.")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+                print("Extra Fields:", extra_fields)
+
+            # Check for timestamp differences
+            check_timestamp_difference(extra_fields)
+
+            # Iterate over extra field header IDs
+            idx = 0
+            while idx < len(info.extra):
+                header_id, data_size = struct.unpack('<HH', info.extra[idx:idx+4])
+                if header_id == 0x000A:
+                    characteristics['NTFS_timestamp'] = True
+                elif header_id == 0x5455:
+                    characteristics['extended_timestamp'] = True
+                elif header_id == 0x5855:
+                    characteristics['unix_uid_gid'] = True
+                elif header_id == 0x7075:
+                    characteristics['unicode_path'] = True
+                idx += 4 + data_size
+
+            # Determine encoding if possible
+            if characteristics['unicode_path']:
+                encoding = 'UTF-8'
+            elif characteristics['mac_folder']:
+                encoding = 'UTF-8'
+            elif characteristics['NTFS_timestamp']:
+                encoding = 'UTF-16'
+            else:
+                encoding = 'Unknown'
+
+        # Identify probable source based on characteristics
+        if characteristics['mac_folder']:
+            origin = "macOS Compress or similar macOS tool"
+        elif characteristics['NTFS_timestamp']:
+            origin = "Windows-based tool"
+        elif characteristics['extended_timestamp'] and characteristics['unix_uid_gid']:
+            origin = "Unix/Linux tool, possibly on macOS or Ubuntu"
+        elif characteristics['unicode_path']:
+            origin = "Windows with Unicode support (e.g., WinRAR)"
+        else:
+            origin = "Unknown or unsupported tool"
+
+        print("\n-----ZIP File Summary:")
+        print(f"Probable ZIP file origin: {origin}")
+        if verbose:
+            print(f"Detected Characteristics: {characteristics}")
+        print(f"Encoding used: {encoding}")
