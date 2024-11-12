@@ -2,129 +2,212 @@ import zipfile
 import struct
 import datetime
 
-# Convert DOS date and time to datetime object
-def dos_date_to_datetime(dos_date, dos_time):
-    day = dos_date & 0x1F
-    month = (dos_date >> 5) & 0x0F
-    year = ((dos_date >> 9) & 0x7F) + 1980
-    sec = (dos_time & 0x1F) * 2
-    min = (dos_time >> 5) & 0x3F
-    hour = (dos_time >> 11) & 0x1F
-    return datetime.datetime(year, month, day, hour, min, sec)
+# Detect the operating system and app that created it
+def detect_zip_origin(extra, file_list, zip_info_list, verbose=False):
+    characteristics = {
+        'Windows': 0,
+        'MacOS': 0,
+        'Ubuntu': 0,
+        'WinRAR': 0,
+        'WinZip': 0,
+        '7-zip': 0,
+        'Bandizip': 0,
+        'Compress': 0,
+        'zip': 0,
+    }
 
-# Read and parse Extra Fields
-def read_extra_field(extra):
-    index = 0
-    fields = {}
-    while index < len(extra):
+    features = {
+        'NTFS_timestamp': False,
+        'nanoseconds_format': False,
+        'extended_timestamp': False,
+        'unix_uid_gid': False,
+        'unicode_path': False,
+        'root_folder_header': False,
+        'double_zipping': False,
+        'mac_folder': False,
+        'data_descriptor': False,
+    }
+
+    idx = 0
+    while idx < len(extra):
         try:
-            # Read Header ID (2 bytes) and Data Size (2 bytes)
-            header_id, data_size = struct.unpack('<HH', extra[index:index+4])
-            data = extra[index+4:index+4+data_size]
+            header_id, data_size = struct.unpack('<HH', extra[idx:idx+4])
+            data = extra[idx+4:idx+4+data_size]
 
-            # Handle specific IDs
-            if header_id == 0x5455:  # Extended timestamps
-                if len(data) >= 5:
-                    info_bits = data[0]
-                    # Extract `modified` time
-                    fields['modified'] = datetime.datetime.fromtimestamp(struct.unpack('<I', data[1:5])[0])
-                    # Extract `accessed` time if available and required by `info_bits`
-                    if info_bits & 0x01 and len(data) >= 9:
-                        fields['accessed'] = datetime.datetime.fromtimestamp(struct.unpack('<I', data[5:9])[0])
-                    # Extract `created` time if available and required by `info_bits`
-                    if info_bits & 0x02 and len(data) >= 13:
-                        fields['created'] = datetime.datetime.fromtimestamp(struct.unpack('<I', data[9:13])[0])
-            elif header_id == 0x7875:  # UNIX UID/GID
-                if len(data) >= 4:
-                    fields['uid'] = struct.unpack('<H', data[:2])[0]
-                    fields['gid'] = struct.unpack('<H', data[2:4])[0]
-            elif header_id == 0x7075:  # Language encoding flag (EFS)
-                fields['unicode_path'] = data.decode('utf-8', errors='ignore')
+            # Detect based on header_id
+            if header_id == 0x000A:  # NTFS timestamp (Windows)
+                characteristics['Windows'] += 2
+                features['NTFS_timestamp'] = True
+                if data.endswith(b'\xff\xff\xff\xff\xff\xff\xff\xff'):
+                    features['nanoseconds_format'] = True
+                    characteristics['Windows'] += 1
 
-            index += 4 + data_size
-        except struct.error as e:
-            print(f"Error unpacking data: {e}")
+            elif header_id == 0x5455:  # Extended timestamps (Unix-based)
+                characteristics['MacOS'] += 1
+                characteristics['Ubuntu'] += 1
+                features['extended_timestamp'] = True
+                if data_size == 0x13:
+                    characteristics['Compress'] += 2  # Specific to macOS Compress
+                elif data_size == 0x09:
+                    characteristics['zip'] += 2  # Common on Ubuntu
+
+            elif header_id == 0x5855:  # Unix UID/GID (Linux/MacOS)
+                characteristics['MacOS'] += 1
+                characteristics['Ubuntu'] += 1
+                features['unix_uid_gid'] = True
+
+            elif header_id == 0x7075:  # Unicode path extra field (WinRAR)
+                characteristics['WinRAR'] += 2
+                characteristics['Windows'] += 1
+                features['unicode_path'] = True
+
+            elif header_id == 0x7875:  # UID and GID, common in Unix-based systems
+                characteristics['Ubuntu'] += 1
+                characteristics['MacOS'] += 1
+                features['unix_uid_gid'] = True
+
+            elif header_id == 0x50B4:  # WinZip specific header ID
+                characteristics['WinZip'] += 2
+                characteristics['Windows'] += 1
+
+            idx += 4 + data_size
+
+        except struct.error:
+            print("Error reading extra field data")
             break
 
-    return fields
+    for zip_info in zip_info_list:
+        if zip_info.filename.startswith('__MACOSX'):
+            features['mac_folder'] = True
+            characteristics['MacOS'] += 3  # Strong indicator of macOS
 
-# Check for timestamp differences
-def check_timestamp_difference(fields):
-    if 'created' in fields and 'modified' in fields:
-        delta = abs((fields['created'] - fields['modified']).total_seconds())
-        if delta > 0:
-            print(f"Possible timezone difference detected: {delta} seconds")
+        if zip_info.compress_type == zipfile.ZIP_STORED:
+            features['double_zipping'] = True
+            characteristics['7-zip'] += 1  # 7-zip is more likely to store ZIP files without recompression
+
+        # Check for data descriptor (ZIP signature 0x08074b50 or 0x50 4B 07 08)
+        if zip_info.extra and zip_info.extra[:4] == b'\x50\x4B\x07\x08':
+            features['data_descriptor'] = True
+            characteristics['Compress'] += 2  # Likely Compress on macOS
+
+    root_folder = next((f for f in file_list if '/' in f and f.count('/') == 1), None)
+    if root_folder:
+        features['root_folder_header'] = True
+        characteristics['Bandizip'] += 1  # Bandizip often includes root folder headers
+
+    # Determine probable origin based on scores
+    max_score = max(characteristics.values())
+    likely_OS_apps = [key for key, value in characteristics.items() if value == max_score]
+
+    if verbose:
+        if len(likely_OS_apps) == 3:
+            print("Unknown ZIP file origin")
+        if len(likely_OS_apps) == 2:
+            print(f"Likely ZIP file origins (tie): {', '.join(likely_OS_apps)}")
+        else:
+            print(f"Likely ZIP file origin: {likely_OS_apps[0]}")
+        print(f"Scores by characteristics: {characteristics}")
+        print(f"Detected Features: {features}")
+
+    return characteristics
+
+def print_extra_info(zip_info):
+    # File comment (if any)
+    if zip_info.comment:
+        print(f"Comment: {zip_info.comment.decode('utf-8', 'ignore')}")
+    else:
+        print(f"Comment: None")
+
+    # Read Extra Field for additional timestamps and IDs
+    extra = zip_info.extra
+    idx = 0
+    created_date = modified_date = accessed_date = None
+    uid = gid = None
+
+    while idx < len(extra):
+        header_id, data_size = struct.unpack('<HH', extra[idx:idx+4])
+        data = extra[idx+4:idx+4+data_size]
+
+        if header_id == 0x000A:  # NTFS timestamps (Windows)
+            if data_size >= 24:
+                mod_time, acc_time, cre_time = struct.unpack('<QQQ', data[:24])
+                modified_date = datetime.datetime(1601, 1, 1) + datetime.timedelta(microseconds=mod_time // 10)
+                accessed_date = datetime.datetime(1601, 1, 1) + datetime.timedelta(microseconds=acc_time // 10)
+                created_date = datetime.datetime(1601, 1, 1) + datetime.timedelta(microseconds=cre_time // 10)
+            print(f"Created Date (NTFS): {created_date}")
+            print(f"Accessed Date (NTFS): {accessed_date}")
+            print(f"Modified Date (NTFS): {modified_date}")
+
+        elif header_id == 0x5455:  # Unix timestamps
+            if data_size >= 5:
+                info_bits = data[0]
+                offset = 1
+                if info_bits & 1:  # Modification time
+                    mod_time_unix = struct.unpack('<I', data[offset:offset+4])[0]
+                    modified_date = datetime.datetime.fromtimestamp(mod_time_unix)
+                    offset += 4
+                if info_bits & 2:  # Access time
+                    acc_time_unix = struct.unpack('<I', data[offset:offset+4])[0]
+                    accessed_date = datetime.datetime.fromtimestamp(acc_time_unix)
+                    offset += 4
+                if info_bits & 4:  # Creation time
+                    cre_time_unix = struct.unpack('<I', data[offset:offset+4])[0]
+                    created_date = datetime.datetime.fromtimestamp(cre_time_unix)
+            print(f"Created Date (Unix): {created_date}")
+            print(f"Accessed Date (Unix): {accessed_date}")
+            print(f"Modified Date (Unix): {modified_date}")
+
+        elif header_id == 0x7875:  # UNIX UID/GID
+            if data_size >= 6:
+                version, uid_size = struct.unpack('<BB', data[:2])
+                uid = int.from_bytes(data[2:2 + uid_size], 'little')
+                gid_size = data[2 + uid_size]
+                gid = int.from_bytes(data[3 + uid_size:3 + uid_size + gid_size], 'little')
+            print(f"UID: {uid}")
+            print(f"GID: {gid}")
+
+        idx += 4 + data_size
 
 # Analyze ZIP file and detect the operating system that created it
 def analyze_zip_file(file_path, verbose=False):
     with zipfile.ZipFile(file_path, 'r') as zip_file:
         print("\nAnalyzing ZIP file:", file_path)
-        characteristics = {
-            'NTFS_timestamp': False,
-            'extended_timestamp': False,
-            'unix_uid_gid': False,
-            'unicode_path': False,
-            'mac_folder': False
+
+        overall_characteristics = {
+            'Windows': 0,
+            'MacOS': 0,
+            'Ubuntu': 0,
+            'WinRAR': 0,
+            'WinZip': 0,
+            '7-zip': 0,
+            'Bandizip': 0,
+            'Compress': 0,
+            'zip': 0,
         }
-        encoding = 'Unknown'
 
         for info in zip_file.infolist():
-            if info.filename.endswith('/'):
-                if verbose:
+            if verbose:
+                if info.filename.endswith('/'):
                     print("\nFolder Name:", info.filename)
-            else:
-                if verbose:
+                else:
                     print("\nFile Name:", info.filename)
                     print("Compressed Size:", info.compress_size)
                     print("Uncompressed Size:", info.file_size)
                     print("Last Modified:", datetime.datetime(*info.date_time))
+                print_extra_info(info)
+            characteristics = detect_zip_origin(info.extra, zip_file.namelist(), zip_file.infolist(), verbose)
+            for key in overall_characteristics:
+                overall_characteristics[key] += characteristics[key]
 
-            # Read extra fields from file entry
-            extra_fields = read_extra_field(info.extra)
-            if verbose:
-                print("Extra Fields:", extra_fields)
+        #Final analysis
+        max_score = max(overall_characteristics.values())
+        likely_OS_apps = [key for key, value in overall_characteristics.items() if value == max_score]
 
-            # Check for timestamp differences
-            check_timestamp_difference(extra_fields)
-
-            # Iterate over extra field header IDs
-            idx = 0
-            while idx < len(info.extra):
-                header_id, data_size = struct.unpack('<HH', info.extra[idx:idx+4])
-                if header_id == 0x000A:
-                    characteristics['NTFS_timestamp'] = True
-                elif header_id == 0x5455:
-                    characteristics['extended_timestamp'] = True
-                elif header_id == 0x5855:
-                    characteristics['unix_uid_gid'] = True
-                elif header_id == 0x7075:
-                    characteristics['unicode_path'] = True
-                idx += 4 + data_size
-
-            # Determine encoding if possible
-            if characteristics['unicode_path']:
-                encoding = 'UTF-8'
-            elif characteristics['mac_folder']:
-                encoding = 'UTF-8'
-            elif characteristics['NTFS_timestamp']:
-                encoding = 'UTF-16'
-            else:
-                encoding = 'Unknown'
-
-        # Identify probable source based on characteristics
-        if characteristics['mac_folder']:
-            origin = "macOS Compress or similar macOS tool"
-        elif characteristics['NTFS_timestamp']:
-            origin = "Windows-based tool"
-        elif characteristics['extended_timestamp'] and characteristics['unix_uid_gid']:
-            origin = "Unix/Linux tool, possibly on macOS or Ubuntu"
-        elif characteristics['unicode_path']:
-            origin = "Windows with Unicode support (e.g., WinRAR)"
+        print("\n-----Final Analysis:-----")
+        if len(likely_OS_apps) == 3:
+            print("Unknown ZIP file origin")
+        if len(likely_OS_apps) == 2:
+            print(f"Likely ZIP file origins (tie): {', '.join(likely_OS_apps)}")
         else:
-            origin = "Unknown or unsupported tool"
-
-        print("\n-----ZIP File Summary:")
-        print(f"Probable ZIP file origin: {origin}")
-        if verbose:
-            print(f"Detected Characteristics: {characteristics}")
-        print(f"Encoding used: {encoding}")
+            print(f"Likely ZIP file origin: {likely_OS_apps[0]}")
+        print(f"Scores by characteristics: {overall_characteristics}")
