@@ -16,7 +16,7 @@ if __name__ == "__main__":
     parser.add_argument('-f', '--file', type=str, required=True, help='Path to the ZIP file to analyze')
     parser.add_argument('-a', '--analyze', action='store_true', help='Analyze the ZIP file')
     parser.add_argument('-t', '--tree', action='store_true', help='Print the file tree of the ZIP file')
-    parser.add_argument('-x', '--hex', action='store_true', help='View the ZIP file in hex format')
+    parser.add_argument('-x', '--hex', action='store_true', help='View the ZIP file in hex format (Can use with -a)')
     parser.add_argument('-v', '--verbose', action="store_true", help="Enable verbose output.")
     args = parser.parse_args()
 
