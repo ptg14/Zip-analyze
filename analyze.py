@@ -191,7 +191,6 @@ def analyze_zip_file(file_path, verbose=False):
                     print("\nFile Name:", info.filename)
                     print("Compressed Size:", info.compress_size)
                     print("Uncompressed Size:", info.file_size)
-                    print("Last Modified:", datetime.datetime(*info.date_time))
                 print_extra_info(info)
 
         print("\n-----Final Analysis:-----")
