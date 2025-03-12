@@ -128,7 +128,7 @@ def print_extra_info(zip_info):
 
         if header_id == 0x000A:  # NTFS timestamps (Windows)
             if data_size >= 24:
-                mod_time, acc_time, cre_time = struct.unpack('<QQQ', data[:24])
+                mod_time, cre_time, acc_time = struct.unpack('<QQQ', data[:24])
                 modified_date = datetime.datetime(1601, 1, 1) + datetime.timedelta(microseconds=mod_time // 10)
                 accessed_date = datetime.datetime(1601, 1, 1) + datetime.timedelta(microseconds=acc_time // 10)
                 created_date = datetime.datetime(1601, 1, 1) + datetime.timedelta(microseconds=cre_time // 10)
